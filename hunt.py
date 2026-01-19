@@ -65,10 +65,22 @@ def analyze_apk(apk_path):
         except: pass
 
         # Hunt
-        found_secrets = []
+       found_secrets = []
+        # specific "trash words" that appear in your screenshot
+        ignore_list = ["Sheet", "View", "Label", "Layout", "google", "Format", "select", "Input"]
+
         for name, pattern in PATTERNS.items():
             matches = list(set(re.findall(pattern, all_strings)))
             for match in matches:
+                # 1. Filter out common words (Noise reduction)
+                if any(word in match for word in ignore_list):
+                    continue
+                
+                # 2. Heuristic: Real keys usually have digits AND letters
+                # If it's just letters (like "BottomSheetBehav"), it's probably code, not a key
+                if name == "Tuya Local Key" and match.isalpha():
+                    continue
+
                 if len(match) > 5 and "example" not in match:
                     found_secrets.append(f"🔴 {name}: {match}")
 
