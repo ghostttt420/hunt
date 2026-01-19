@@ -10,12 +10,16 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 # --- PATTERNS ---
 PATTERNS = {
-    "Tuya Local Key": r"[a-fA-F0-9]{16}", # Refined: Only Hex characters
-    "Firebase DB": r"https://[a-z0-9-]+\.firebaseio\.com", # Specific Firebase hunter
-    "OhmConnect API": r"https://login\.ohmconnect\.com/[a-zA-Z0-9/_\-]+",
+    # 1. The API URL (We verify it's still there)
+    "API Host": r"login\.ohmconnect\.com",
+    
+    # 2. JSON Parameters (The input fields)
+    # We look for quoted strings often used in JSON logic
+    "Possible Param": r"\"(email|password|user_id|userid|token|auth|device_id|mac|serial|code)\"",
+    
+    # 3. HTTP Headers (The authorization info)
+    "Header": r"\"(Authorization|Bearer|X-API-Key|Content-Type)\"",
 }
-
-IGNORE_LIST = ["example", "google", "support", "www"]
 
 def send_telegram_alert(message):
     if not TELEGRAM_BOT_TOKEN: return
@@ -23,28 +27,11 @@ def send_telegram_alert(message):
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "disable_web_page_preview": True}
     requests.post(url, data=data)
 
-def check_firebase_security(url):
-    """Ethically checks if a Firebase DB is public."""
-    try:
-        # We add 'shallow=true' to avoid downloading data. We just want the status code.
-        target = f"{url}/.json?shallow=true"
-        response = requests.get(target, timeout=5)
-        
-        if response.status_code == 200:
-            return f"⚠️ **VULNERABLE (OPEN):** {url}"
-        elif response.status_code == 401:
-            return f"🔒 **SECURE (LOCKED):** {url}"
-        else:
-            return f"❓ Status {response.status_code}: {url}"
-    except:
-        return f"❌ Error connecting to {url}"
-
 def analyze_apk(apk_path):
     print(f"[*] Analyzing {apk_path}...")
     try:
         app = APK(apk_path)
         package = app.get_package()
-        version = app.get_androidversion_name()
         
         # Get all strings
         all_strings = ""
@@ -52,45 +39,32 @@ def analyze_apk(apk_path):
             try:
                 for s in dex.get_strings(): all_strings += str(s) + "\n"
             except: pass
-        try:
-            res = app.get_android_resources()
-            if res: all_strings += str(res.get_strings_resources())
-        except: pass
 
-        found_secrets = []
-        firebase_urls = []
+        found_params = []
+        found_headers = []
 
-        for name, pattern in PATTERNS.items():
-            matches = list(set(re.findall(pattern, all_strings)))
-            for match in matches:
-                if any(bad in match for bad in IGNORE_LIST): continue
-                
-                # Logic Filters
-                if name == "Tuya Local Key":
-                    # Real keys are usually lowercase hex
-                    if not re.match(r'^[a-f0-9]{16}$', match): continue
-                
-                if name == "Firebase DB":
-                    firebase_urls.append(match)
-                    continue # We handle this separately below
-
-                found_secrets.append(f"🔹 {name}: {match}")
-
-        # CHECK FIREBASE STATUS
-        if firebase_urls:
-            found_secrets.append("\n🔥 **Firebase Security Check:**")
-            for url in firebase_urls:
-                status = check_firebase_security(url)
-                found_secrets.append(status)
+        # Hunt for Parameters
+        matches = list(set(re.findall(PATTERNS["Possible Param"], all_strings)))
+        for match in matches:
+            found_params.append(f"🔹 Param: {match}")
+            
+        # Hunt for Headers
+        matches = list(set(re.findall(PATTERNS["Header"], all_strings)))
+        for match in matches:
+            found_headers.append(f"🔸 Header: {match}")
 
         # Reporting
-        if found_secrets:
-            report = f"🚨 **Hunter Report: {package} v{version}**\n\n"
-            report += "\n".join(found_secrets[:25])
+        if found_params or found_headers:
+            report = f"🕵️ **API Skeleton Report: {package}**\n\n"
+            report += "**Potential JSON Inputs:**\n"
+            report += "\n".join(sorted(found_params))
+            report += "\n\n**Headers:**\n"
+            report += "\n".join(sorted(found_headers))
+            
             print(report)
             send_telegram_alert(report)
         else:
-            print("[-] No secrets found.")
+            print("[-] No obvious API parameters found.")
 
     except Exception as e:
         print(f"Error: {e}")
