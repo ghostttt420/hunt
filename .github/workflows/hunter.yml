@@ -2,14 +2,14 @@ name: OhmPlug Hunter
 
 on:
   schedule:
-    - cron: '0 8 * * *' # Runs daily at 8:00 UTC
-  workflow_dispatch: # Allows manual trigger button
+    - cron: '0 8 * * *'
+  workflow_dispatch:
 
 jobs:
   hunt-job:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Needed to save the APK (optional)
+      contents: write
       
     steps:
       - name: Checkout Code
@@ -23,21 +23,22 @@ jobs:
       - name: Install Tools
         run: |
           pip install androguard requests
-          # Install apkeep (Robust APK downloader)
           cargo install apkeep 
 
       - name: Download OhmPlug APK
         run: |
-          # The ID we found
           TARGET_ID="com.ohm.plug"
-          
           echo "Downloading $TARGET_ID..."
-          # Uses apkeep to fetch from APKPure/Google Play anonymously
+          # Download to current directory (.)
           apkeep -a $TARGET_ID .
+
+      - name: Debug - List Files
+        run: |
+          echo "📂 Directory Structure:"
+          ls -R
 
       - name: Run Analysis
         env:
-          # Add these to your GitHub Repo Settings -> Secrets
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python hunt.py
