@@ -3,7 +3,7 @@ name: OhmPlug Hunter
 on:
   schedule:
     - cron: '0 8 * * *'
-  workflow_dispatch:
+  workflow_dispatch: # Allows manual trigger button
 
 jobs:
   hunt-job:
@@ -20,21 +20,26 @@ jobs:
         with:
           python-version: '3.9'
 
-      - name: Install Tools
+      - name: Install Dependencies
         run: |
           pip install androguard requests
-          cargo install apkeep 
+          # We don't need apkeep anymore since we have a direct link
 
-      - name: Download OhmPlug APK
+      - name: Download Target APK
         run: |
-          # Try downloading explicitly from APKPure
-          echo "Attempting download of com.ohm.plug..."
-          apkeep -a com.ohm.plug -d apk-pure . || echo "⚠️ Auto-download failed."
+          echo "Downloading from Catbox..."
+          # Download the file and rename it to 'target.apk'
+          wget -O target.apk https://files.catbox.moe/vzs163.apk
 
-      - name: Debug - Show Files
+      - name: Verify Download
         run: |
-          echo "📂 Directory Content:"
-          ls -R
+          if [ -f "target.apk" ]; then
+            echo "✅ Download successful. File size:"
+            ls -lh target.apk
+          else
+            echo "❌ Download failed."
+            exit 1
+          fi
 
       - name: Run Analysis
         env:
