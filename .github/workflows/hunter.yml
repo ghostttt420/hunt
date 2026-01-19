@@ -27,14 +27,13 @@ jobs:
 
       - name: Download OhmPlug APK
         run: |
-          TARGET_ID="com.ohm.plug"
-          echo "Downloading $TARGET_ID..."
-          # Download to current directory (.)
-          apkeep -a $TARGET_ID .
+          # Try downloading explicitly from APKPure
+          echo "Attempting download of com.ohm.plug..."
+          apkeep -a com.ohm.plug -d apk-pure . || echo "⚠️ Auto-download failed."
 
-      - name: Debug - List Files
+      - name: Debug - Show Files
         run: |
-          echo "📂 Directory Structure:"
+          echo "📂 Directory Content:"
           ls -R
 
       - name: Run Analysis
