@@ -8,17 +8,19 @@ from androguard.core.apk import APK
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# --- PATTERNS ---
+# --- BROAD PATTERNS (The "Deep Dredge") ---
 PATTERNS = {
-    # 1. The API URL (We verify it's still there)
-    "API Host": r"login\.ohmconnect\.com",
+    # 1. API Related Words (Case Insensitive, No Quotes Required)
+    # We look for common variable names used in login/hardware logic
+    "API Key Candidate": r"(?i)\b(apikey|auth_token|access_token|client_secret)\b",
+    "Login Param": r"(?i)\b(username|password|email|passwd|user_id|userid|credential)\b",
+    "Hardware Param": r"(?i)\b(mac_address|serial_no|device_id|tuya_id|local_key)\b",
     
-    # 2. JSON Parameters (The input fields)
-    # We look for quoted strings often used in JSON logic
-    "Possible Param": r"\"(email|password|user_id|userid|token|auth|device_id|mac|serial|code)\"",
+    # 2. HTTP Methods (How they talk)
+    "HTTP Method": r"\b(POST|GET|PUT|DELETE|PATCH)\b",
     
-    # 3. HTTP Headers (The authorization info)
-    "Header": r"\"(Authorization|Bearer|X-API-Key|Content-Type)\"",
+    # 3. Content Types (What language they speak)
+    "Content Type": r"application/(json|x-www-form-urlencoded|xml)",
 }
 
 def send_telegram_alert(message):
@@ -33,41 +35,56 @@ def analyze_apk(apk_path):
         app = APK(apk_path)
         package = app.get_package()
         
-        # Get all strings
+        # --- 1. STRING HUNTING ---
         all_strings = ""
         for dex in app.get_all_dex():
             try:
                 for s in dex.get_strings(): all_strings += str(s) + "\n"
             except: pass
 
-        found_params = []
-        found_headers = []
+        found_items = []
+        
+        # Scan strings
+        for name, pattern in PATTERNS.items():
+            matches = list(set(re.findall(pattern, all_strings)))
+            # Filter: Only keep if length is reasonable (avoid huge garbage strings)
+            clean_matches = [m for m in matches if len(m) < 25]
+            for match in clean_matches:
+                found_items.append(f"🔹 {match} ({name})")
 
-        # Hunt for Parameters
-        matches = list(set(re.findall(PATTERNS["Possible Param"], all_strings)))
-        for match in matches:
-            found_params.append(f"🔹 Param: {match}")
-            
-        # Hunt for Headers
-        matches = list(set(re.findall(PATTERNS["Header"], all_strings)))
-        for match in matches:
-            found_headers.append(f"🔸 Header: {match}")
+        # --- 2. CLASS NAME HUNTING (The New Trick) ---
+        # We look for Java class names that sound like API Models
+        # e.g., "com.ohm.plug.model.LoginRequest"
+        print("[*] Scanning Class Names...")
+        for dex in app.get_all_dex():
+            for method in dex.get_methods():
+                class_name = method.get_class_name()
+                # Look for "Request", "Response", "Model" in the file path
+                if any(x in class_name for x in ["Request", "Response", "Model", "DTO"]):
+                    # Clean up the name (Lcom/ohm/plug/LoginRequest; -> LoginRequest)
+                    clean_name = class_name.split('/')[-1].replace(';', '').replace('L', '')
+                    if "android" not in clean_name and "google" not in clean_name:
+                        found_items.append(f"📂 Class: {clean_name}")
 
+        # Remove duplicates
+        found_items = list(set(found_items))
+        
         # Reporting
-        if found_params or found_headers:
-            report = f"🕵️ **API Skeleton Report: {package}**\n\n"
-            report += "**Potential JSON Inputs:**\n"
-            report += "\n".join(sorted(found_params))
-            report += "\n\n**Headers:**\n"
-            report += "\n".join(sorted(found_headers))
+        if found_items:
+            # Sort and pick top 30 to avoid spamming
+            found_items.sort()
+            report = f"🧪 **Deep Dredge Report: {package}**\n\n"
+            report += "\n".join(found_items[:30])
             
             print(report)
             send_telegram_alert(report)
         else:
-            print("[-] No obvious API parameters found.")
+            print("[-] Deep scan found nothing. App might be heavily obfuscated.")
 
     except Exception as e:
-        print(f"Error: {e}")
+        err_msg = f"⚠️ Error: {e}"
+        print(err_msg)
+        send_telegram_alert(err_msg)
 
 if __name__ == "__main__":
     files = [f for f in os.listdir('.') if f.endswith('.apk')]
