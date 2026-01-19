@@ -2,7 +2,7 @@ import os
 import sys
 import re
 import requests
-from androguard.core.bytecodes.apk import APK
+from androguard.core.apk import APK
 
 # --- CONFIGURATION ---
 # 1. Get your Chat ID by messaging @userinfobot on Telegram
