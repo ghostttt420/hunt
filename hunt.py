@@ -8,13 +8,9 @@ from androguard.misc import AnalyzeAPK
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# --- SPAM FILTER ---
-# We will ignore any file containing these words
-IGNORE_LIST = [
-    "Facebook", "Instagram", "Google", "Android", "AccessToken", 
-    "Fragment", "Activity", "View", "Wrapper", "Factory", "Impl",
-    "Interceptor", "Manager", "Builder"
-]
+# --- TARGETS ---
+# We only want to look inside these specific files
+TARGET_CLASSES = ["ApiConstant", "AgentTokenRequestParams"]
 
 def send_telegram_alert(message):
     if not TELEGRAM_BOT_TOKEN: return
@@ -30,45 +26,60 @@ def analyze_apk(apk_path):
         app, dex_list, dx = AnalyzeAPK(apk_path)
         package = app.get_package()
         
-        print(f"[*] Hunting for Custom Models in {package}...")
-        
-        found_classes = []
+        report_lines = []
+        report_lines.append(f"🔬 **Inspector Report: {package}**")
 
         for dex in dex_list:
-            for method in dex.get_methods():
-                class_name = method.get_class_name()
+            for current_class in dex.get_classes():
+                class_name = current_class.get_name() # Returns Lcom/package/Name;
                 
-                # CLEANUP: Lcom/ohm/plug/LoginRequest; -> LoginRequest
-                clean_name = class_name.split('/')[-1].replace(';', '').replace('L', '')
-                
-                # FILTER 1: Remove Noise
-                if any(ignored in clean_name for ignored in IGNORE_LIST):
-                    continue
-                
-                # FILTER 2: Find the "Good Stuff"
-                # We want API Models (Requests/Responses) or API Services
-                if any(x in clean_name for x in ["Request", "Response", "Body", "Service", "Api"]):
+                # Check if this class matches our targets
+                if any(t in class_name for t in TARGET_CLASSES):
+                    clean_name = class_name.split('/')[-1].replace(';', '').replace('L', '')
+                    report_lines.append(f"\n📂 **File: {clean_name}**")
                     
-                    # Heuristic: Custom code usually doesn't have "$" symbols (inner classes)
-                    if "$" not in clean_name:
-                        found_classes.append(clean_name)
+                    # 1. READ VARIABLES (Fields)
+                    # This tells us the JSON keys (e.g., "username", "password")
+                    fields = current_class.get_fields()
+                    if fields:
+                        report_lines.append("  -- Variables --")
+                        for field in fields:
+                            report_lines.append(f"  • {field.get_name()}")
 
-        # Remove duplicates and sort
-        found_classes = sorted(list(set(found_classes)))
-        
-        if found_classes:
-            report = f"💎 **Cleaned Code Report**\n\n"
-            # Show top 30 non-Facebook results
-            report += "\n".join(found_classes[:30])
-            
-            print(report)
-            send_telegram_alert(report)
-        else:
-            print("[-] No relevant classes found after filtering.")
+                    # 2. READ CONSTANT VALUES (Static Initializers)
+                    # This tells us the Hardcoded URLs or Keys
+                    # We look for the <clinit> method (Static Constructor)
+                    for method in current_class.get_methods():
+                        if method.get_name() == "<clinit>":
+                            # This gets the code inside the static block
+                            code = method.get_code()
+                            if code:
+                                # We define a set to catch unique strings
+                                const_strings = set() 
+                                # Bytecode hack: Look for string constants used in this method
+                                for instr in code.get_bc().get_instructions():
+                                    output = instr.get_output()
+                                    # If the instruction loads a string, grab it
+                                    if '"' in output:
+                                        # Clean up the string syntax
+                                        clean_str = output.split('"')[1]
+                                        if len(clean_str) > 2:
+                                            const_strings.add(clean_str)
+                                
+                                if const_strings:
+                                    report_lines.append("  -- Hardcoded Values --")
+                                    for s in const_strings:
+                                        report_lines.append(f"  🔑 {s}")
+
+        # Send Report
+        final_report = "\n".join(report_lines)
+        print(final_report)
+        send_telegram_alert(final_report[:4000]) # Telegram limit
 
     except Exception as e:
-        print(f"Error: {e}")
-        send_telegram_alert(f"Error: {e}")
+        err_msg = f"⚠️ Error: {e}"
+        print(err_msg)
+        send_telegram_alert(err_msg)
 
 if __name__ == "__main__":
     files = [f for f in os.listdir('.') if f.endswith('.apk')]
