@@ -1,0 +1,40 @@
+name: Manifest Hunter
+
+on:
+  workflow_dispatch:
+    inputs:
+      apk_url:
+        description: 'Direct link to the APK'
+        required: true
+
+jobs:
+  manifest-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install Tools
+        run: sudo apt-get install -y aapt
+
+      - name: Download APK
+        run: wget -O target.apk "${{ inputs.apk_url }}"
+
+      - name: Dump AndroidManifest
+        run: |
+          echo "📝 Reading Manifest Metadata..."
+          # This command extracts all meta-data tags
+          aapt dump xmltree target.apk AndroidManifest.xml > manifest_dump.txt
+          
+          # We search for lines containing "meta-data" and the lines immediately following them
+          grep -C 5 "meta-data" manifest_dump.txt || echo "[-] No meta-data found."
+
+      - name: Hunt for Tuya/Smart Keys
+        run: |
+          echo "🕵️‍♂️ Filtering for Keys..."
+          # Look for common key names
+          grep -iE "TUYA|SMART|KEY|SECRET|APPID|TOKEN" manifest_dump.txt || echo "[-] No obvious keys in Manifest."
+          
+      - name: Upload Full Dump (In case we miss it)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Manifest_Full_Dump
+          path: manifest_dump.txt
