@@ -1,0 +1,52 @@
+name: The Firmware Heist
+
+on:
+  workflow_dispatch: # Manual trigger button
+
+jobs:
+  heist:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: |
+          pip install requests
+          # Install Binwalk for extraction
+          sudo apt-get update
+          sudo apt-get install -y binwalk squashfs-tools
+
+      - name: 🕵️ Impersonate App & Get URL
+        id: get_url
+        run: python get_firmware.py
+
+      - name: 📥 Download Firmware
+        if: steps.get_url.outputs.firmware_url != ''
+        run: |
+          echo "Downloading from: ${{ steps.get_url.outputs.firmware_url }}"
+          wget -O firmware.bin "${{ steps.get_url.outputs.firmware_url }}"
+
+      - name: 🔓 Crack Open Firmware (Binwalk)
+        if: steps.get_url.outputs.firmware_url != ''
+        run: |
+          # Extract everything (-e) recursively (-M)
+          binwalk -e -M firmware.bin
+          
+          echo "✅ Extraction Complete. Listing interesting files..."
+          find _firmware.bin.extracted -name "shadow"
+          find _firmware.bin.extracted -name "passwd"
+          find _firmware.bin.extracted -name "*.pem"
+
+      - name: 📦 Upload The Loot
+        if: steps.get_url.outputs.firmware_url != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: Device_File_System
+          path: _firmware.bin.extracted/
