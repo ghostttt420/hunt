@@ -3,6 +3,8 @@ import sys
 import re
 import requests
 from androguard.core.apk import APK
+# NEW IMPORT: This is required to translate raw bytes into code
+from androguard.core.bytecodes.dvm import DalvikVMFormat
 
 # --- CONFIGURATION ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -10,16 +12,15 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 # --- BROAD PATTERNS (The "Deep Dredge") ---
 PATTERNS = {
-    # 1. API Related Words (Case Insensitive, No Quotes Required)
-    # We look for common variable names used in login/hardware logic
+    # 1. API Related Words (Case Insensitive)
     "API Key Candidate": r"(?i)\b(apikey|auth_token|access_token|client_secret)\b",
     "Login Param": r"(?i)\b(username|password|email|passwd|user_id|userid|credential)\b",
     "Hardware Param": r"(?i)\b(mac_address|serial_no|device_id|tuya_id|local_key)\b",
     
-    # 2. HTTP Methods (How they talk)
+    # 2. HTTP Methods
     "HTTP Method": r"\b(POST|GET|PUT|DELETE|PATCH)\b",
     
-    # 3. Content Types (What language they speak)
+    # 3. Content Types
     "Content Type": r"application/(json|x-www-form-urlencoded|xml)",
 }
 
@@ -27,7 +28,9 @@ def send_telegram_alert(message):
     if not TELEGRAM_BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "disable_web_page_preview": True}
-    requests.post(url, data=data)
+    try:
+        requests.post(url, data=data)
+    except: pass
 
 def analyze_apk(apk_path):
     print(f"[*] Analyzing {apk_path}...")
@@ -35,28 +38,42 @@ def analyze_apk(apk_path):
         app = APK(apk_path)
         package = app.get_package()
         
-        # --- 1. STRING HUNTING ---
-        all_strings = ""
-        for dex in app.get_all_dex():
-            try:
-                for s in dex.get_strings(): all_strings += str(s) + "\n"
-            except: pass
-
         found_items = []
         
-        # Scan strings
+        # --- PRE-PROCESS: Convert Bytes to Code Objects ---
+        dex_objects = []
+        for dex_bytes in app.get_all_dex():
+            try:
+                # This fixes the "bytes has no attribute" error
+                dex_objects.append(DalvikVMFormat(dex_bytes))
+            except Exception as e:
+                print(f"[-] Failed to parse a DEX file: {e}")
+
+        # --- 1. STRING HUNTING ---
+        print("[*] Scanning Strings...")
+        all_strings = ""
+        
+        # Get strings from the NOW PROCESSED code objects
+        for dex in dex_objects:
+            for s in dex.get_strings():
+                all_strings += str(s) + "\n"
+                
+        # Get strings from resources
+        try:
+            res = app.get_android_resources()
+            if res: all_strings += str(res.get_strings_resources())
+        except: pass
+
+        # Scan strings against patterns
         for name, pattern in PATTERNS.items():
             matches = list(set(re.findall(pattern, all_strings)))
-            # Filter: Only keep if length is reasonable (avoid huge garbage strings)
-            clean_matches = [m for m in matches if len(m) < 25]
+            clean_matches = [m for m in matches if len(m) < 40] # Filter huge junk
             for match in clean_matches:
                 found_items.append(f"🔹 {match} ({name})")
 
-        # --- 2. CLASS NAME HUNTING (The New Trick) ---
-        # We look for Java class names that sound like API Models
-        # e.g., "com.ohm.plug.model.LoginRequest"
+        # --- 2. CLASS NAME HUNTING ---
         print("[*] Scanning Class Names...")
-        for dex in app.get_all_dex():
+        for dex in dex_objects:
             for method in dex.get_methods():
                 class_name = method.get_class_name()
                 # Look for "Request", "Response", "Model" in the file path
@@ -71,10 +88,9 @@ def analyze_apk(apk_path):
         
         # Reporting
         if found_items:
-            # Sort and pick top 30 to avoid spamming
             found_items.sort()
             report = f"🧪 **Deep Dredge Report: {package}**\n\n"
-            report += "\n".join(found_items[:30])
+            report += "\n".join(found_items[:35])
             
             print(report)
             send_telegram_alert(report)
@@ -82,7 +98,7 @@ def analyze_apk(apk_path):
             print("[-] Deep scan found nothing. App might be heavily obfuscated.")
 
     except Exception as e:
-        err_msg = f"⚠️ Error: {e}"
+        err_msg = f"⚠️ Critical Error: {e}"
         print(err_msg)
         send_telegram_alert(err_msg)
 
