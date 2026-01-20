@@ -8,120 +8,89 @@ from androguard.misc import AnalyzeAPK
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# --- SECRET SIGNATURES (The Trap) ---
-# We use Regex to identify specific key formats
-SIGNATURES = {
-    # 1. Cloud Infrastructure (Critical)
-    "🚨 AWS Access Key": r"(?<![A-Z0-9])AKIA[A-Z0-9]{16}(?![A-Z0-9])",
-    "🚨 AWS Secret": r"(?i)aws_secret_access_key['\"]?\s*[:=]\s*['\"]?([A-Za-z0-9/+=]{40})['\"]?",
-    "🚨 Google Cloud Key": r"AIza[0-9A-Za-z\\-_]{35}",
-    "🚨 Firebase URL": r"https://[a-z0-9-]+\.firebaseio\.com",
-    
-    # 2. Payment & Business (Money)
-    "💰 Stripe Live Key": r"sk_live_[0-9a-zA-Z]{24}",
-    "💰 PayPal Client": r"access_token\$production\$[0-9a-z]{16}\$[0-9a-f]{32}",
-    "💰 Square Access": r"sq0atp-[0-9A-Za-z\-_]{22}",
-    
-    # 3. Communication (SMS/Chat)
-    "💬 Slack Token": r"xox[baprs]-([0-9a-zA-Z]{10,48})?",
-    "💬 Twilio SID": r"AC[a-f0-9]{32}",
-    "💬 Telegram Bot": r"[0-9]{8,10}:[a-zA-Z0-9_-]{35}",
-    
-    # 4. Generic "High Entropy" (Catch-all for weird keys)
-    # Looks for strings that say "secret", "key", or "token" followed by a long random string
-    "⚠️ Generic Secret": r"(?i)(api_key|access_token|secret_key|auth_token)['\"]?\s*[:=]\s*['\"]?([a-zA-Z0-9\-_]{32,})['\"]?",
+# --- PATTERNS ---
+# We are looking for URLs that point to firmware files or update servers
+PATTERNS = {
+    "📦 Firmware Binary": r"https?://[\w./-]+\.bin",
+    "📦 Zip Archive": r"https?://[\w./-]+\.zip",
+    "🔄 OTA/Upgrade URL": r"https?://[\w./-]+(?:upgrade|ota|firmware)[\w./-]*",
 }
 
-# Ignore list to prevent false alarms (like public libraries)
-IGNORE_STRINGS = [
-    "example.com", "android.intent", "www.w3.org", "google.com", 
-    "facebook.com", "github.com", "googleapis.com", "crashlytics"
-]
+# --- TARGET CLASSES ---
+# We specifically inspect these files for logic
+TARGET_CLASSES = ["ActionOtaResponse", "Upgrade", "Ota", "Firmware"]
 
 def send_telegram_alert(message):
     if not TELEGRAM_BOT_TOKEN: return
-    # Telegram has a limit, so we chunk long messages
-    if len(message) > 4000:
-        message = message[:4000] + "\n...[TRUNCATED]"
-        
+    # Chunking for Telegram limit
+    if len(message) > 4000: message = message[:4000] + "\n...[TRUNCATED]"
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "disable_web_page_preview": True}
-    try:
-        requests.post(url, data=data)
+    try: requests.post(url, data=data)
     except: pass
 
 def analyze_apk(apk_path):
-    print(f"[*] Hunting Secrets in {apk_path}...")
+    print(f"[*] Starting Firmware Heist on {apk_path}...")
     try:
-        # Decompile the APK
         app, dex_list, dx = AnalyzeAPK(apk_path)
         package = app.get_package()
         
-        found_secrets = []
-        
-        # 1. HARVEST ALL STRINGS
-        # We combine every string in the app into one massive text block for scanning
-        print("[*] Extracting strings...")
-        all_strings = set()
+        report_lines = []
+        report_lines.append(f"💿 **Firmware Heist: {package}**")
+
+        # 1. SCAN SPECIFIC OTA CLASSES
+        print("[*] Inspecting OTA Logic...")
+        for dex in dex_list:
+            for current_class in dex.get_classes():
+                class_name = current_class.get_name()
+                clean_name = class_name.split('/')[-1].replace(';', '').replace('L', '')
+                
+                # Check if this class is related to OTA
+                if any(t in clean_name for t in TARGET_CLASSES):
+                    report_lines.append(f"\n📂 **Class: {clean_name}**")
+                    
+                    # Extract variables (might be "downloadUrl" or "version")
+                    for field in current_class.get_fields():
+                        report_lines.append(f"  • {field.get_name()}")
+                    
+                    # Extract hardcoded strings inside this class
+                    code = ""
+                    for method in current_class.get_methods():
+                        if method.get_code():
+                            for instr in method.get_code().get_bc().get_instructions():
+                                if '"' in instr.get_output():
+                                    report_lines.append(f"  String: {instr.get_output().strip()}")
+
+        # 2. GLOBAL STRING SCAN (The .bin Hunter)
+        print("[*] Scanning for binary URLs...")
+        all_strings = ""
         for dex in dex_list:
             for s in dex.get_strings():
-                if len(s) > 8: # Ignore tiny strings
-                    all_strings.add(str(s))
-        
-        # Add Resources strings (like strings.xml)
-        try:
-            res = app.get_android_resources()
-            if res:
-                res_strings = res.get_strings_resources()
-                # Use a safer way to extract values from the resource object
-                for key in res_strings:
-                     # This handles different androguard versions
-                    try:
-                        all_strings.add(str(res_strings[key])) 
-                    except: pass
-        except: pass
+                all_strings += str(s) + "\n"
 
-        print(f"[*] Scanning {len(all_strings)} unique strings...")
+        found_urls = []
+        for name, pattern in PATTERNS.items():
+            matches = list(set(re.findall(pattern, all_strings)))
+            for match in matches:
+                # Filter out short junk matches
+                if len(match) > 15:
+                    found_urls.append(f"🔹 {name}: {match}")
 
-        # 2. MATCH SIGNATURES
-        for s in all_strings:
-            # Quick filter: Ignore common junk
-            if any(ign in s for ign in IGNORE_STRINGS):
-                continue
-                
-            for name, pattern in SIGNATURES.items():
-                # Regex Search
-                matches = re.findall(pattern, s)
-                if matches:
-                    for match in matches:
-                        # If the match is a tuple (from groups), join it
-                        if isinstance(match, tuple):
-                            match = match[-1] # Usually the last group is the key
-                        
-                        # formatting
-                        found_secrets.append(f"{name}:\n`{match}`")
-
-             # 3. REPORTING
-        # Remove duplicates
-        found_secrets = list(set(found_secrets))
-        
-        if found_secrets:
-            found_secrets.sort()
-            report = f"🗝️ **Key Hunter Report: {package}**\n\n"
-            report += "\n\n".join(found_secrets)
-            print(report)
-            send_telegram_alert(report)
+        if found_urls:
+            report_lines.append("\n**🌍 Potential Firmware Links:**")
+            report_lines.extend(sorted(found_urls))
         else:
-            # NEW: Send a notification even if nothing is found
-            msg = f"✅ **Scan Complete: {package}**\nNo exposed API keys were found in this APK."
-            print(msg)
-            send_telegram_alert(msg)
+            report_lines.append("\n[-] No direct .bin or .zip URLs found globally.")
+
+        # 3. REPORT
+        final_report = "\n".join(report_lines)
+        print(final_report)
+        send_telegram_alert(final_report)
 
     except Exception as e:
-        err_msg = f"⚠️ Scan Error: {e}"
+        err_msg = f"⚠️ Heist Failed: {e}"
         print(err_msg)
         send_telegram_alert(err_msg)
-
 
 if __name__ == "__main__":
     files = [f for f in os.listdir('.') if f.endswith('.apk')]
