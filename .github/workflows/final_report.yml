@@ -1,0 +1,28 @@
+name: Generate Credentials Report
+
+on: workflow_dispatch
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create Credentials File
+        run: |
+          echo "Generating Access Credentials..."
+          cat <<EOF > ohmplug_secrets.json
+          {
+            "description": "OhmPlug Cloud Credentials (Extracted)",
+            "region": "US",
+            "api_endpoint": "https://a1.tuyaus.com/api.json",
+            "device_id": "1090522143161722",
+            "client_id": "fmwgqwn7kqfcp793mftn",
+            "app_secret": "4dv444aexjrkemfgdhecsdkyxe5hcp7h",
+            "extraction_method": "Manifest Metadata & API Fuzzing"
+          }
+          EOF
+
+      - name: 📦 Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OhmPlug_Keys
+          path: ohmplug_secrets.json
