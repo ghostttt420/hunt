@@ -29,7 +29,7 @@ jobs:
         run: |
           echo "Downloading from Catbox..."
           # Download the file and rename it to 'target.apk'
-          wget -O target.apk https://d.apkpure.net/b/APK/com.macrovideo.v380pro?version=latest.apk
+          wget -O target.apk https://d.apkpure.net/b/APK/com.macrovideo.v380pro?version=latest
 
       - name: Verify Download
         run: |
