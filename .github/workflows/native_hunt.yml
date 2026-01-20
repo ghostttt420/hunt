@@ -1,0 +1,43 @@
+name: Native Library Hunter
+
+on:
+  workflow_dispatch:
+    inputs:
+      apk_url:
+        description: 'Direct link to the APK'
+        required: true
+
+jobs:
+  native-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download APK
+        run: wget -O target.apk "${{ inputs.apk_url }}"
+
+      - name: Unzip APK (Extract Libraries)
+        run: |
+          unzip target.apk -d extracted_apk
+          echo "📂 Finding Native Libraries..."
+          find extracted_apk/lib -name "*.so"
+
+      - name: The String Dump (Native Scan)
+        run: |
+          echo "🕵️‍♂️ Scanning .so files for hidden secrets..."
+          
+          # We loop through every .so file found
+          find extracted_apk/lib -name "*.so" | while read libfile; do
+            echo "----------------------------------------"
+            echo "Scanning: $libfile"
+            
+            # 1. Extract printable strings
+            # 2. Filter for secrets (URLs, Keys, Secrets)
+            # 3. Show the matches
+            strings "$libfile" | grep -E "https://|wss://|appKey|appSecret|signKey|prod|dev|tuya" || true
+          done
+
+      - name: Deep Search (The 'Auth' Grep)
+        run: |
+          echo "🕵️‍♂️ Hunting for 'Auth' or 'Token' strings specifically..."
+          # Sometimes keys are just labeled 'auth'
+          find extracted_apk/lib -name "*.so" -exec strings {} \; | grep -iE "auth|token|passwd" | head -n 20
