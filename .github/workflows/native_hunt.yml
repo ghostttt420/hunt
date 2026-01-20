@@ -3,7 +3,7 @@ name: Native Library Hunter
 on:
   workflow_dispatch:
     inputs:
-      apk_url: https://files.catbox.moe/vzs163.apk
+      apk_url: 
         description: 'Direct link to the APK'
         required: true
 
