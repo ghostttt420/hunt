@@ -8,12 +8,14 @@ from androguard.misc import AnalyzeAPK
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# --- THE KILL LIST (Regex Patterns) ---
+# --- THE KILL LIST (Fixed Regex) ---
 PATTERNS = {
+    # AWS Keys (Matches generic IDs like AKIA...)
     "🔑 AWS Access Key ID": r"(A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}",
-    "🔐 AWS Secret Key": r"(?i)aws(.{0,20})?(?-i)['\"][0-9a-zA-Z\/+]{40}['\"]",
+    # AWS Secrets (Case insensitive "aws" label, then look for 40-char key in quotes)
+    "🔐 AWS Secret Key": r"(?i)aws(.{0,20})?['\"][0-9a-zA-Z\/+]{40}['\"]",
     "💳 Stripe Live Key": r"sk_live_[0-9a-zA-Z]{24}",
-    "💬 Slack Webhook": r"https://hooks.slack.com/services/T[a-zA-Z0-9_]+/B[a-zA-Z0-9_]+/[a-zA-Z0-9_]+",
+    "💬 Slack Webhook": r"https://hooks\.slack\.com/services/T[a-zA-Z0-9_]+/B[a-zA-Z0-9_]+/[a-zA-Z0-9_]+",
     "🗺️ Google API Key": r"AIza[0-9A-Za-z\\-_]{35}",
     "🐦 Twitter/X Token": r"[1-9][0-9]+-[0-9a-zA-Z]{40}",
     "📧 Mailgun API": r"key-[0-9a-zA-Z]{32}",
@@ -31,7 +33,7 @@ def send_telegram_alert(message):
     except: pass
 
 def analyze_apk(apk_path):
-    print(f"[*] Starting 'Scorched Earth' Scan on {apk_path}...")
+    print(f"[*] Starting 'Cloud Sweeper' Scan on {apk_path}...")
     report = f"☢️ **Cloud Sweeper Report: {apk_path}**\n\n"
     
     found_secrets = set()
@@ -62,9 +64,9 @@ def analyze_apk(apk_path):
                     if len(clean_match) < 8: continue
                     if "EXAMPLE" in clean_match.upper(): continue
                     
-                    # Create a "censored" version for the report so we don't leak full keys in plain text logs
+                    # Create a "censored" version for the report
                     censored = clean_match[:4] + "..." + clean_match[-4:]
-                    found_secrets.add(f"{name}: `{clean_match}`")
+                    found_secrets.add(f"{name}: `{censored}` (Full key hidden)")
 
         # 2. SCAN ASSETS/CONFIG FILES (Non-code files)
         print("[*] scanning assets/ folder for config files...")
@@ -78,7 +80,7 @@ def analyze_apk(apk_path):
                             matches = re.findall(pattern, content)
                             for m in matches:
                                 if isinstance(m, tuple): m = m[0]
-                                found_secrets.add(f"{name} (in {filename}): `{m.strip()}`")
+                                found_secrets.add(f"{name} (in {filename}): `{m.strip()[:10]}...`")
                     except: pass
 
         # 3. REPORT GENERATION
