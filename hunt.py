@@ -101,7 +101,7 @@ def analyze_apk(apk_path):
                         # formatting
                         found_secrets.append(f"{name}:\n`{match}`")
 
-        # 3. REPORTING
+             # 3. REPORTING
         # Remove duplicates
         found_secrets = list(set(found_secrets))
         
@@ -109,16 +109,19 @@ def analyze_apk(apk_path):
             found_secrets.sort()
             report = f"🗝️ **Key Hunter Report: {package}**\n\n"
             report += "\n\n".join(found_secrets)
-            
             print(report)
             send_telegram_alert(report)
         else:
-            print("[-] No high-value keys found.")
+            # NEW: Send a notification even if nothing is found
+            msg = f"✅ **Scan Complete: {package}**\nNo exposed API keys were found in this APK."
+            print(msg)
+            send_telegram_alert(msg)
 
     except Exception as e:
         err_msg = f"⚠️ Scan Error: {e}"
         print(err_msg)
         send_telegram_alert(err_msg)
+
 
 if __name__ == "__main__":
     files = [f for f in os.listdir('.') if f.endswith('.apk')]
