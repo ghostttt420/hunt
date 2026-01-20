@@ -8,6 +8,14 @@ from androguard.misc import AnalyzeAPK
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
+# --- SPAM FILTER ---
+# We will ignore any file containing these words
+IGNORE_LIST = [
+    "Facebook", "Instagram", "Google", "Android", "AccessToken", 
+    "Fragment", "Activity", "View", "Wrapper", "Factory", "Impl",
+    "Interceptor", "Manager", "Builder"
+]
+
 def send_telegram_alert(message):
     if not TELEGRAM_BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -19,45 +27,48 @@ def send_telegram_alert(message):
 def analyze_apk(apk_path):
     print(f"[*] Analyzing {apk_path}...")
     try:
-        # Load the APK
         app, dex_list, dx = AnalyzeAPK(apk_path)
         package = app.get_package()
         
-        print(f"[*] Hunting for Login Models in {package}...")
+        print(f"[*] Hunting for Custom Models in {package}...")
         
         found_classes = []
 
-        # Scan every class name in the app
         for dex in dex_list:
             for method in dex.get_methods():
                 class_name = method.get_class_name()
                 
-                # CLEANUP: Convert "Lcom/ohm/plug/LoginRequest;" -> "LoginRequest"
+                # CLEANUP: Lcom/ohm/plug/LoginRequest; -> LoginRequest
                 clean_name = class_name.split('/')[-1].replace(';', '').replace('L', '')
                 
-                # FILTER: Only keep classes related to Auth/Login/User
-                # We also exclude standard Android libraries to reduce noise
-                if any(x in clean_name for x in ["Login", "Auth", "Token", "User", "Session", "Credential"]):
-                    if "android" not in class_name and "google" not in class_name:
+                # FILTER 1: Remove Noise
+                if any(ignored in clean_name for ignored in IGNORE_LIST):
+                    continue
+                
+                # FILTER 2: Find the "Good Stuff"
+                # We want API Models (Requests/Responses) or API Services
+                if any(x in clean_name for x in ["Request", "Response", "Body", "Service", "Api"]):
+                    
+                    # Heuristic: Custom code usually doesn't have "$" symbols (inner classes)
+                    if "$" not in clean_name:
                         found_classes.append(clean_name)
 
         # Remove duplicates and sort
         found_classes = sorted(list(set(found_classes)))
         
         if found_classes:
-            report = f"🎯 **Login Sniper Report**\n\n"
-            # Show the top 20 most relevant login files
-            report += "\n".join(found_classes[:25])
+            report = f"💎 **Cleaned Code Report**\n\n"
+            # Show top 30 non-Facebook results
+            report += "\n".join(found_classes[:30])
             
             print(report)
             send_telegram_alert(report)
         else:
-            print("[-] No specific Login classes found.")
+            print("[-] No relevant classes found after filtering.")
 
     except Exception as e:
-        err_msg = f"⚠️ Critical Error: {e}"
-        print(err_msg)
-        send_telegram_alert(err_msg)
+        print(f"Error: {e}")
+        send_telegram_alert(f"Error: {e}")
 
 if __name__ == "__main__":
     files = [f for f in os.listdir('.') if f.endswith('.apk')]
