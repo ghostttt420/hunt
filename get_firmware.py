@@ -10,21 +10,20 @@ CLIENT_ID = "fmwgqwn7kqfcp793mftn"
 APP_SECRET = "4dv444aexjrkemfgdhecsdkyxe5hcp7h" 
 DEVICE_ID = "1090522143161722"
 
-# --- GLOBAL REGIONS ---
-# We will hop through these until one accepts our ID
-REGIONS = [
-    ("US (United States)", "https://a1.tuyaus.com/api.json"),
-    ("EU (Europe)", "https://a1.tuyaeu.com/api.json"),
-    ("CN (China)", "https://a1.tuyacn.com/api.json"),
-    ("IN (India)", "https://a1.tuyain.com/api.json")
+# --- TARGET ---
+# We stick to the US server because it accepted our Key
+BASE_URL = "https://a1.tuyaus.com/api.json"
+
+# --- FUZZ LIST ---
+# We know the command exists, we just need the version.
+# We also add a few other "Tuya" commands that might leak info.
+COMMANDS = [
+    "tuya.m.device.upgrade.detail",
+    "tuya.m.device.ota.info",
+    "tuya.m.my.group.device.list", # Might leak device details
 ]
 
-# --- COMMAND LIST ---
-# Mixing "Thing" (New) and "Tuya" (Old) just to be safe
-TARGET_CMDS = [
-    ("thing.m.device.upgrade.info", "1.0"),  # The one we found in strings
-    ("tuya.m.device.upgrade.detail", "4.3"), # The standard backup
-]
+VERSIONS = ["1.0", "1.1", "1.2", "2.0", "3.0", "4.0", "4.1", "4.2", "4.3", "4.4", "4.5"]
 
 def get_sign(params, secret):
     sorted_keys = sorted(params.keys())
@@ -33,20 +32,19 @@ def get_sign(params, secret):
     return hashlib.md5(to_sign.encode('utf-8')).hexdigest()
 
 def run():
-    print(f"[*] Starting Global Region Hop for Device: {DEVICE_ID}")
+    print(f"[*] Starting Version Brute-Force on US Server...")
+    
+    found_something = False
 
-    for region_name, base_url in REGIONS:
-        print(f"\n🌍 Jumping to Region: {region_name}")
-        
-        for api, version in TARGET_CMDS:
-            print(f"   👉 Testing: {api} (v{version})...")
-            
+    for cmd in COMMANDS:
+        print(f"\n🔨 Fuzzing Command: {cmd}")
+        for v in VERSIONS:
             params = {
-                "a": api,
+                "a": cmd,
                 "devId": DEVICE_ID,
                 "time": str(int(time.time())),
                 "client_id": CLIENT_ID,
-                "v": version,
+                "v": v,
                 "os": "Android",
                 "nonce": str(uuid.uuid4())
             }
@@ -54,23 +52,15 @@ def run():
             params["sign"] = get_sign(params, APP_SECRET)
             
             try:
-                r = requests.post(base_url, data=params, timeout=5)
+                r = requests.post(BASE_URL, data=params)
                 data = r.json()
                 
-                # Check for Authentication Success
-                # ILLEGAL_CLIENT_ID means wrong region. 
-                # Anything else (even an empty result) means RIGHT region.
-                error_code = data.get("errorCode", "")
-                
-                if error_code == "ILLEGAL_CLIENT_ID":
-                    print("   ❌ Wrong Region (Key not found here)")
-                    continue # Try next command, then next region
-                
-                # If we get here, the Key IS valid in this region
-                print(f"   ✅ REGION MATCH! Server accepted the Key.")
-                print(f"   Response: {data}")
-                
+                # Check if it worked
                 if data.get("success"):
+                    print(f"   ✅ JACKPOT! Version {v} worked!")
+                    print(f"   Payload: {data}")
+                    
+                    # Check for URL
                     result = data.get("result")
                     url = None
                     if isinstance(result, dict):
@@ -84,18 +74,25 @@ def run():
                             with open(os.environ["GITHUB_OUTPUT"], "a") as f:
                                 f.write(f"firmware_url={url}\n")
                         sys.exit(0)
-                    else:
-                        print("   [-] Authorized, but no firmware link in response.")
-                        # We found the region, but maybe not the right command version
-                        # We don't exit here, we let it finish the loop in this region
-                else:
-                    print(f"   ⚠️ Key Accepted, but API Failed: {error_code}")
                     
-            except Exception as e:
-                print(f"   ⚠️ Connection Error: {e}")
+                    found_something = True
+                
+                elif data.get("errorCode") == "API_OR_API_VERSION_WRONG":
+                    # This means we are close, but wrong version
+                    print(f"   . v{v} (Wrong Version)")
+                else:
+                    # Some other error (Permissions etc)
+                    print(f"   ⚠️ v{v} Error: {data.get('errorCode')}")
 
-    print("\n[-] Global scan complete.")
-    sys.exit(1)
+            except Exception as e:
+                print(f"   Connection Error: {e}")
+
+    if found_something:
+        print("\n[+] We found valid commands, but no firmware URL (Device is likely updated).")
+        sys.exit(0)
+    else:
+        print("\n[-] Brute force failed.")
+        sys.exit(1)
 
 if __name__ == "__main__":
     run()
