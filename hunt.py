@@ -1,5 +1,4 @@
 import os
-import sys
 import re
 import requests
 from androguard.misc import AnalyzeAPK
@@ -9,86 +8,72 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 # --- PATTERNS ---
-# We are looking for URLs that point to firmware files or update servers
+# We are looking for hardcoded cloud storage links
 PATTERNS = {
     "📦 Firmware Binary": r"https?://[\w./-]+\.bin",
     "📦 Zip Archive": r"https?://[\w./-]+\.zip",
-    "🔄 OTA/Upgrade URL": r"https?://[\w./-]+(?:upgrade|ota|firmware)[\w./-]*",
+    "🔄 Tuya/Ohm Upgrade": r"https?://[\w./-]+(?:upgrade|ota|firmware|airtake)[\w./-]*",
 }
-
-# --- TARGET CLASSES ---
-# We specifically inspect these files for logic
-TARGET_CLASSES = ["ActionOtaResponse", "Upgrade", "Ota", "Firmware"]
 
 def send_telegram_alert(message):
     if not TELEGRAM_BOT_TOKEN: return
-    # Chunking for Telegram limit
-    if len(message) > 4000: message = message[:4000] + "\n...[TRUNCATED]"
+    # Send in chunks if needed, but this report should be short
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "disable_web_page_preview": True}
     try: requests.post(url, data=data)
     except: pass
 
 def analyze_apk(apk_path):
-    print(f"[*] Starting Firmware Heist on {apk_path}...")
+    print(f"[*] Starting URL Sniper on {apk_path}...")
     try:
         app, dex_list, dx = AnalyzeAPK(apk_path)
         package = app.get_package()
         
-        report_lines = []
-        report_lines.append(f"💿 **Firmware Heist: {package}**")
-
-        # 1. SCAN SPECIFIC OTA CLASSES
-        print("[*] Inspecting OTA Logic...")
-        for dex in dex_list:
-            for current_class in dex.get_classes():
-                class_name = current_class.get_name()
-                clean_name = class_name.split('/')[-1].replace(';', '').replace('L', '')
-                
-                # Check if this class is related to OTA
-                if any(t in clean_name for t in TARGET_CLASSES):
-                    report_lines.append(f"\n📂 **Class: {clean_name}**")
-                    
-                    # Extract variables (might be "downloadUrl" or "version")
-                    for field in current_class.get_fields():
-                        report_lines.append(f"  • {field.get_name()}")
-                    
-                    # Extract hardcoded strings inside this class
-                    code = ""
-                    for method in current_class.get_methods():
-                        if method.get_code():
-                            for instr in method.get_code().get_bc().get_instructions():
-                                if '"' in instr.get_output():
-                                    report_lines.append(f"  String: {instr.get_output().strip()}")
-
-        # 2. GLOBAL STRING SCAN (The .bin Hunter)
-        print("[*] Scanning for binary URLs...")
-        all_strings = ""
+        # 1. HARVEST ALL STRINGS
+        print("[*] Extracting strings...")
+        all_strings = set()
+        
+        # Get strings from code (DEX)
         for dex in dex_list:
             for s in dex.get_strings():
-                all_strings += str(s) + "\n"
+                if len(s) > 10: # Ignore tiny noise
+                    all_strings.add(str(s))
+        
+        # Get strings from resources (XML)
+        try:
+            res = app.get_android_resources()
+            if res:
+                res_strings = res.get_strings_resources()
+                for key in res_strings:
+                    try: all_strings.add(str(res_strings[key])) 
+                    except: pass
+        except: pass
 
+        # 2. SCAN FOR URLS
         found_urls = []
-        for name, pattern in PATTERNS.items():
-            matches = list(set(re.findall(pattern, all_strings)))
-            for match in matches:
-                # Filter out short junk matches
-                if len(match) > 15:
-                    found_urls.append(f"🔹 {name}: {match}")
-
-        if found_urls:
-            report_lines.append("\n**🌍 Potential Firmware Links:**")
-            report_lines.extend(sorted(found_urls))
-        else:
-            report_lines.append("\n[-] No direct .bin or .zip URLs found globally.")
+        for s in all_strings:
+            for name, pattern in PATTERNS.items():
+                matches = re.findall(pattern, s)
+                for match in matches:
+                    # Filter junk (e.g., standard android URLs)
+                    if "android.com" in match or "w3.org" in match: continue
+                    found_urls.append(f"🔹 {name}:\n{match}")
 
         # 3. REPORT
-        final_report = "\n".join(report_lines)
-        print(final_report)
-        send_telegram_alert(final_report)
+        found_urls = sorted(list(set(found_urls))) # Remove duplicates
+        
+        if found_urls:
+            report = f"🎯 **Firmware URL Sniper: {package}**\n\n"
+            report += "\n\n".join(found_urls[:20]) # Top 20 results
+            print(report)
+            send_telegram_alert(report)
+        else:
+            msg = f"[-] No direct Firmware URLs found in {package}."
+            print(msg)
+            send_telegram_alert(msg)
 
     except Exception as e:
-        err_msg = f"⚠️ Heist Failed: {e}"
+        err_msg = f"⚠️ Scan Failed: {e}"
         print(err_msg)
         send_telegram_alert(err_msg)
 
