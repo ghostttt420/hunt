@@ -1,25 +1,23 @@
 import os
-import zipfile
-import json
+import re
+import requests
+from androguard.misc import AnalyzeAPK
 
 # --- CONFIGURATION ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 # --- TARGETS ---
-# We saw these files in your logs. They likely contain the init config.
-TARGET_FILES = [
-    "assets/thing_plugin_config.json",
-    "assets/ty_plugin_config.json", 
-    "assets/x_platform_config.json",
-    "assets/configList.json",
-    "assets/thing_pbt_group_config.json",
-    "assets/ty_pbt_group_config.json"
+# We are looking for the specific file that handles OTA (Firmware) requests
+TARGET_CLASSES = [
+    "AccessoriesOTARequestRep", 
+    "ActionOtaResponse", 
+    "UpgradeApi",
+    "ThingOta"
 ]
 
 def send_telegram_alert(message):
     if not TELEGRAM_BOT_TOKEN: return
-    # Chunk long messages
     if len(message) > 4000: message = message[:4000] + "\n...[TRUNCATED]"
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "disable_web_page_preview": True}
@@ -27,44 +25,50 @@ def send_telegram_alert(message):
     except: pass
 
 def analyze_apk(apk_path):
-    print(f"[*] Dumping Configs from {apk_path}...")
+    print(f"[*] Analyzing {apk_path} for OTA Commands...")
     try:
-        report = f"📂 **Config Dump Report**\n"
+        app, dex_list, dx = AnalyzeAPK(apk_path)
+        package = app.get_package()
         
-        with zipfile.ZipFile(apk_path, 'r') as z:
-            # Check which targets actually exist in this APK
-            all_files = z.namelist()
-            
-            for target in TARGET_FILES:
-                if target in all_files:
-                    print(f"[*] Reading {target}...")
-                    try:
-                        # Read the file
-                        content_bytes = z.read(target)
-                        content_str = content_bytes.decode('utf-8', errors='ignore')
-                        
-                        # Formatting: If it's JSON, try to pretty print it
-                        try:
-                            json_obj = json.loads(content_str)
-                            # Minify it slightly to fit more in the message
-                            formatted_content = json.dumps(json_obj, indent=2)
-                        except:
-                            formatted_content = content_str
-                        
-                        report += f"\n\n📄 **File: {target}**\n"
-                        report += f"```json\n{formatted_content[:1000]}\n```" # First 1000 chars
-                        
-                    except Exception as e:
-                        report += f"\n❌ Error reading {target}: {e}"
+        report = f"🕵️‍♂️ **Command Extraction Report**\n"
         
+        for dex in dex_list:
+            for current_class in dex.get_classes():
+                class_name = current_class.get_name()
+                clean_name = class_name.split('/')[-1].replace(';', '').replace('L', '')
+                
+                # Only inspect our suspects
+                if any(t in clean_name for t in TARGET_CLASSES):
+                    report += f"\n📂 **File: {clean_name}**"
+                    
+                    # 1. Grab all strings defined in this class
+                    # This is where "tuya.m.device.upgrade" would be hidden
+                    const_strings = set()
+                    for method in current_class.get_methods():
+                        if method.get_code():
+                            for instr in method.get_code().get_bc().get_instructions():
+                                output = instr.get_output()
+                                if '"' in output:
+                                    # Extract string inside quotes
+                                    s = output.split('"')[1]
+                                    if len(s) > 5 and ("." in s or "upgrade" in s):
+                                        const_strings.add(s)
+                    
+                    if const_strings:
+                        for s in const_strings:
+                            report += f"\n  🔑 Found String: `{s}`"
+                    else:
+                        report += "\n  (No suspicious strings found)"
+
         print(report)
         send_telegram_alert(report)
 
     except Exception as e:
-        print(f"Error: {e}")
+        err = f"⚠️ Error: {e}"
+        print(err)
+        send_telegram_alert(err)
 
 if __name__ == "__main__":
-    import requests # Imported here to be safe
     files = [f for f in os.listdir('.') if f.endswith('.apk')]
     if files: analyze_apk(files[0])
     else: print("No APK found.")
