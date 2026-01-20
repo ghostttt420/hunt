@@ -1,74 +1,77 @@
 import os
+import zipfile
 import re
 import requests
-from androguard.misc import AnalyzeAPK
 
 # --- CONFIGURATION ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 # --- PATTERNS ---
-# We are looking for hardcoded cloud storage links
+# We are hunting for the "Master Keys" that sign API requests
 PATTERNS = {
-    "📦 Firmware Binary": r"https?://[\w./-]+\.bin",
-    "📦 Zip Archive": r"https?://[\w./-]+\.zip",
-    "🔄 Tuya/Ohm Upgrade": r"https?://[\w./-]+(?:upgrade|ota|firmware|airtake)[\w./-]*",
+    "🔑 App Key": r"(?i)(app_?key|client_?id)\":\s*\"([a-zA-Z0-9]{10,})\"",
+    "🔐 App Secret": r"(?i)(app_?secret|client_?secret|sign_?key)\":\s*\"([a-zA-Z0-9]{10,})\"",
+    "🔒 License Key": r"(?i)key\":\s*\"([a-zA-Z0-9]{16,})\"",
 }
+
+# --- TARGET EXTENSIONS ---
+# We only care about config files, not images or code
+TARGET_EXTS = [".json", ".xml", ".properties", ".txt", ".yaml"]
 
 def send_telegram_alert(message):
     if not TELEGRAM_BOT_TOKEN: return
-    # Send in chunks if needed, but this report should be short
+    if len(message) > 4000: message = message[:4000] + "\n...[TRUNCATED]"
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "disable_web_page_preview": True}
     try: requests.post(url, data=data)
     except: pass
 
 def analyze_apk(apk_path):
-    print(f"[*] Starting URL Sniper on {apk_path}...")
+    print(f"[*] Starting Asset Stripper on {apk_path}...")
     try:
-        app, dex_list, dx = AnalyzeAPK(apk_path)
-        package = app.get_package()
+        found_secrets = []
         
-        # 1. HARVEST ALL STRINGS
-        print("[*] Extracting strings...")
-        all_strings = set()
-        
-        # Get strings from code (DEX)
-        for dex in dex_list:
-            for s in dex.get_strings():
-                if len(s) > 10: # Ignore tiny noise
-                    all_strings.add(str(s))
-        
-        # Get strings from resources (XML)
-        try:
-            res = app.get_android_resources()
-            if res:
-                res_strings = res.get_strings_resources()
-                for key in res_strings:
-                    try: all_strings.add(str(res_strings[key])) 
-                    except: pass
-        except: pass
+        # Open APK as a ZIP file
+        with zipfile.ZipFile(apk_path, 'r') as z:
+            # List all files inside
+            file_list = z.namelist()
+            
+            # Filter for assets/ and res/raw/
+            config_files = [f for f in file_list if any(x in f for x in ["assets/", "res/raw/"]) and any(f.endswith(ext) for ext in TARGET_EXTS)]
+            
+            print(f"[*] Scanning {len(config_files)} configuration files...")
 
-        # 2. SCAN FOR URLS
-        found_urls = []
-        for s in all_strings:
-            for name, pattern in PATTERNS.items():
-                matches = re.findall(pattern, s)
-                for match in matches:
-                    # Filter junk (e.g., standard android URLs)
-                    if "android.com" in match or "w3.org" in match: continue
-                    found_urls.append(f"🔹 {name}:\n{match}")
+            for filename in config_files:
+                try:
+                    # Read the file content
+                    content = z.read(filename).decode('utf-8', errors='ignore')
+                    
+                    # 1. Check for Specific Patterns
+                    for name, pattern in PATTERNS.items():
+                        matches = re.findall(pattern, content)
+                        for match in matches:
+                            # match is usually a tuple (key, value), we want the value
+                            val = match[1] if isinstance(match, tuple) else match
+                            found_secrets.append(f"📂 {filename}\n  {name}: `{val}`")
+                            
+                    # 2. Heuristic: Look for "tuya" config files specifically
+                    if "tuya" in filename and "json" in filename:
+                         found_secrets.append(f"📄 **Found Tuya Config:** {filename}")
+                         # Dump the first 200 chars to see what's inside
+                         found_secrets.append(f"```{content[:200]}...```")
 
-        # 3. REPORT
-        found_urls = sorted(list(set(found_urls))) # Remove duplicates
-        
-        if found_urls:
-            report = f"🎯 **Firmware URL Sniper: {package}**\n\n"
-            report += "\n\n".join(found_urls[:20]) # Top 20 results
+                except Exception as e:
+                    pass
+
+        # REPORT
+        if found_secrets:
+            report = f"🗝️ **Asset Stripper Report**\n\n"
+            report += "\n\n".join(found_secrets[:15]) # Limit to top 15 findings
             print(report)
             send_telegram_alert(report)
         else:
-            msg = f"[-] No direct Firmware URLs found in {package}."
+            msg = "[-] No keys found in asset configuration files."
             print(msg)
             send_telegram_alert(msg)
 
